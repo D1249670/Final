@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <title>價格查詢</title>
+    <link rel="stylesheet" href="/stylesheets/style.css">
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; background: #fdf6e3; }
+        .query-bar { margin-bottom: 20px; text-align: center; }
+        label, select, button { font-size: 1rem; }
+        .clearfix { display: flex; justify-content: center; align-items: flex-start; }
+        .main-content { display: flex; flex-direction: column; align-items: center; justify-content: center; }
+        table { border-collapse: separate; border-spacing: 0; width: 120%; margin-top: 20px; margin-left: 0; float: none; }
+        th, td { border: 1px solid #ccc; padding: 8px; text-align: center; background: #fdf6e3; }
+        th { background: #f0f0f0; }
+        #chart-container { width: 50%; margin-top: 20px; display: flex; flex-direction: column; align-items: center; }
+        #chart { width: 100%; height: 350px; }
+        .growth-info { margin-top: 16px; font-size: 1.1rem; }
+    </style>
+</head>
+<body>
+    <div class="query-bar">
+        <label for="startYear">起始年份：</label>
+        <select id="startYear"></select>
+        <label for="endYear">結束年份：</label>
+        <select id="endYear"></select>
+        <button onclick="queryPrices()">查詢</button>
+    </div>
+    <div class="insert-bar" style="text-align:center; margin-bottom:20px;">
+        <label for="insertType">類型：</label>
+        <select id="insertType">
+            <option value="taiwan">台灣</option>
+            <option value="global">全球</option>
+        </select>
+        <label for="insertYear">年份：</label>
+        <input id="insertYear" type="number" style="width:80px;">
+        <label for="insertPrice">價格：</label>
+        <input id="insertPrice" type="text" style="width:80px;">
+        <button onclick="insertPrice()">新增</button>
+        <span id="insertMsg" style="color:green;margin-left:10px;"></span>
+    </div>
+    <div class="main-content">
+        <div id="result"></div>
+        <div id="chart-container">
+            <canvas id="chart"></canvas>
+            <div class="growth-info" id="growthInfo"></div>
+        </div>
+    </div>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script>
+        // 動態產生年份選單
+        const startSelect = document.getElementById('startYear');
+        const endSelect = document.getElementById('endYear');
+        for(let y=2005; y<=2025; y++){
+            startSelect.innerHTML += `<option value="${y}">${y}</option>`;
+            endSelect.innerHTML += `<option value="${y}">${y}</option>`;
+        }
+        startSelect.value = 2005;
+        endSelect.value = 2025;
+
+        function queryPrices() {
+            const start = startSelect.value;
+            const end = endSelect.value;
+            fetch(`/prices?start=${start}&end=${end}`)
+                .then(res => res.json())
+                .then(data => {
+                    // 整理成以年份為主的合併表格
+                    let yearMap = {};
+                    (data.taiwan || []).forEach(row => {
+                        yearMap[row.year] = { year: row.year, taiwan: row.price, global: '' };
+                    });
+                    (data.global || []).forEach(row => {
+                        if (!yearMap[row.year]) yearMap[row.year] = { year: row.year, taiwan: '', global: row.price };
+                        else yearMap[row.year].global = row.price;
+                    });
+                    const years = Object.keys(yearMap).sort((a, b) => a - b);
+                    let html = '<table><tr><th>年份</th><th>台灣價格（新台幣）</th><th>全球價格（新台幣）</th></tr>';
+                    years.forEach(y => {
+                        const row = yearMap[y];
+                        html += `<tr><td>${row.year}</td><td>${row.taiwan || '-'}</td><td>${row.global || '-'}</td></tr>`;
+                    });
+                    html += '</table>';
+                    document.getElementById('result').innerHTML = html;
+
+                    // 折線圖資料處理
+                    const labels = years;
+                    const taiwanPrices = years.map(y => parseFloat((yearMap[y].taiwan || '0').replace(/[^\d.]/g, '')) || null);
+                    const globalPrices = years.map(y => parseFloat((yearMap[y].global || '0').replace(/[^\d.]/g, '')) || null);
+                    renderChart(labels, taiwanPrices, globalPrices);
+
+                    // 計算漲幅
+                    const tStart = taiwanPrices.find(v => v !== null);
+                    const tEnd = [...taiwanPrices].reverse().find(v => v !== null);
+                    const gStart = globalPrices.find(v => v !== null);
+                    const gEnd = [...globalPrices].reverse().find(v => v !== null);
+                    let tGrowth = tStart && tEnd ? (((tEnd - tStart) / tStart) * 100).toFixed(2) : '-';
+                    let gGrowth = gStart && gEnd ? (((gEnd - gStart) / gStart) * 100).toFixed(2) : '-';
+                    document.getElementById('growthInfo').innerHTML =
+                        `台灣漲幅：${tGrowth === '-' ? '-' : tGrowth + '%'}<br>全球漲幅：${gGrowth === '-' ? '-' : gGrowth + '%'}`;
+                })
+                .catch(() => {
+                    document.getElementById('result').innerHTML = '<p>查詢失敗</p>';
+                    document.getElementById('growthInfo').innerHTML = '';
+                    renderChart([], [], []);
+                });
+        }
+        let chartInstance = null;
+        function renderChart(labels, taiwanData, globalData) {
+            const ctx = document.getElementById('chart').getContext('2d');
+            if (chartInstance) chartInstance.destroy();
+            chartInstance = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        {
+                            label: '台灣',
+                            data: taiwanData,
+                            borderColor: '#ff9800',
+                            backgroundColor: 'rgba(255,152,0,0.1)',
+                            spanGaps: true
+                        },
+                        {
+                            label: '全球',
+                            data: globalData,
+                            borderColor: '#2196f3',
+                            backgroundColor: 'rgba(33,150,243,0.1)',
+                            spanGaps: true
+                        }
+                    ]
+                },
+                options: {
+                    responsive: false,
+                    plugins: {
+                        legend: { display: true }
+                    },
+                    scales: {
+                        x: { title: { display: true, text: '年份' } },
+                        y: { title: { display: true, text: '價格（新台幣）' }, beginAtZero: false }
+                    }
+                }
+            });
+        }
+        // 預設查詢全部
+        queryPrices();
+
+        function insertPrice() {
+            const type = document.getElementById('insertType').value;
+            const year = document.getElementById('insertYear').value;
+            const price = document.getElementById('insertPrice').value.trim();
+            if (!year || isNaN(year)) {
+                document.getElementById('insertMsg').style.color = 'red';
+                document.getElementById('insertMsg').innerText = '請輸入正確年份';
+                return;
+            }
+            if (!price) {
+                document.getElementById('insertMsg').style.color = 'red';
+                document.getElementById('insertMsg').innerText = '請輸入價格';
+                return;
+            }
+            fetch('/insert-price', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ type, year, price })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    document.getElementById('insertMsg').style.color = 'green';
+                    document.getElementById('insertMsg').innerText = '新增成功';
+                    queryPrices();
+                } else {
+                    document.getElementById('insertMsg').style.color = 'red';
+                    document.getElementById('insertMsg').innerText = data.error || '新增失敗';
+                }
+            })
+            .catch(() => {
+                document.getElementById('insertMsg').style.color = 'red';
+                document.getElementById('insertMsg').innerText = '新增失敗';
+            });
+        }
+    </script>
+</body>
+</html>
